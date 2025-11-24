@@ -12,6 +12,7 @@ export default function FloorplanDetector() {
   const [dragOver, setDragOver] = useState(false);
   const imageRef = useRef(null);
   const canvasRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
     return () => {
@@ -38,6 +39,10 @@ export default function FloorplanDetector() {
     setPreviewUrl(url);
     setResultUrl(null);
     setJsonResult(null);
+
+    if(fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
   };
 
   const handleDrop = (e) => {
@@ -238,12 +243,13 @@ export default function FloorplanDetector() {
                   </p>
                   <label className="cursor-pointer">
                     <input
+                      ref={fileInputRef}
                       type="file"
                       accept="image/*"
                       className="hidden"
                       onChange={(e) => handleFiles(e.target.files)}
                     />
-                    <button className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-8 py-3 rounded-lg shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105">
+                    <button type="button" onClick={() => fileInputRef.current?.click()} className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-8 py-3 rounded-lg shadow-lg hover:shadow-xl transition-all duration-200 transform hover:scale-105">
                       Choose Image
                     </button>
                   </label>
