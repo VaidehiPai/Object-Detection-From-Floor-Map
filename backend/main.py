@@ -12,12 +12,18 @@ import os
 app = FastAPI()
 
 # 1. Configure CORS
+origins = [
+    "http://localhost:5173",  # For local testing
+    "https://object-detection-from-floor-map.vercel.app",  # <--- YOUR VERCEL APP
+    "https://object-detection-from-floor-map.vercel.app/"  # Add with trailing slash just in case
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=origins,  # Use the specific list
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],    # Allow all methods (POST, GET, etc.)
+    allow_headers=["*"],    # Allow all headers
 )
 
 # 2. LOAD MODEL (Prioritize ONNX for Speed/Memory)
