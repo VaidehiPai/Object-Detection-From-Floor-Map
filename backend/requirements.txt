@@ -3,6 +3,7 @@ uvicorn
 python-multipart
 ultralytics
 onnxruntime
+onnx
 pillow
 opencv-python-headless
 numpy
