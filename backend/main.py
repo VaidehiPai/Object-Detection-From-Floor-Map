@@ -1,11 +1,13 @@
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 from PIL import Image
 import io
 import cv2
 import numpy as np
+import base64
+import os
 
 app = FastAPI()
 
@@ -18,52 +20,71 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 2. Load the model
-try:
-    model = YOLO("best.pt")
-    print("Loaded best.pt successfully")
-except Exception as e:
-    print(f"Could not load best.pt: {e}. Loading standard YOLOv8n-seg instead.")
+# 2. LOAD MODEL (Prioritize ONNX for Speed/Memory)
+# Check for ONNX first because it fits on the Free Tier
+possible_paths = [
+    "backend/best.onnx", 
+    "best.onnx",
+    "backend/best.pt",
+    "best.pt"
+]
+
+model_path = None
+for path in possible_paths:
+    if os.path.exists(path):
+        model_path = path
+        break
+
+if model_path:
+    print(f"Loading model from: {model_path}")
+    # task='segment' ensures it loads correctly for segmentation
+    model = YOLO(model_path, task='segment') 
+else:
+    print("ERROR: Could not find best.onnx or best.pt. Using fallback.")
     model = YOLO("yolov8n-seg.pt")
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    # 3. Read the image file
     contents = await file.read()
     image = Image.open(io.BytesIO(contents)).convert("RGB")
 
-    # --- NEW STEP: Resize Image to 1024px ---
-    # Calculate new size maintaining aspect ratio
+    # Resize (1024px is fine for ONNX usually)
     max_size = 1024
     ratio = max_size / max(image.width, image.height)
     new_size = (int(image.width * ratio), int(image.height * ratio))
-    
-    # Resize the image using high-quality resampling
     image = image.resize(new_size, Image.Resampling.LANCZOS)
-    # ----------------------------------------
 
-    # 4. Run inference
-    # We pass imgsz=1024 so the model runs at the same resolution as our image
+    # Run inference
+    # Note: ONNX ignores 'imgsz' sometimes, but we keep it for consistency
     results = model(image, conf=0.25, imgsz=1024)
     result = results[0]
 
-    # 5. Generate the annotated image
-    # We pass the resized image explicitly to ensure the drawing matches perfectly
+    # --- COUNT DETECTIONS ---
+    counts = {}
+    if result.boxes:
+        for box in result.boxes:
+            cls_id = int(box.cls[0])
+            if result.names:
+                label = result.names[cls_id]
+                counts[label] = counts.get(label, 0) + 1
+    # ------------------------
+
+    # Generate Image
     annotated_frame = result.plot(img=np.array(image))
-
-    # 6. Convert BGR to RGB
     annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-
-    # 7. Convert back to PIL Image
     final_image = Image.fromarray(annotated_frame_rgb)
 
-    # 8. Save to memory buffer
     img_io = io.BytesIO()
     final_image.save(img_io, format='PNG')
     img_io.seek(0)
 
-    # 9. Return the image response
-    return Response(content=img_io.getvalue(), media_type="image/png")
+    img_base64 = base64.b64encode(img_io.getvalue()).decode("utf-8")
+
+    return JSONResponse(content={
+        "counts": counts,
+        "image_base64": img_base64,
+        "image_mime": "image/png"
+    })
 
 if __name__ == "__main__":
     import uvicorn
