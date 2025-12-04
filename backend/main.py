@@ -21,86 +21,81 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global variable to hold the model (starts empty)
 model = None
 
 def get_model():
-    """Load the model only when needed (Lazy Loading)"""
     global model
     if model is None:
-        print("Loading model for the first time...")
-        # Prioritize ONNX
+        print("Loading model...")
         possible_paths = ["backend/best.onnx", "best.onnx", "backend/best.pt", "best.pt"]
         model_path = next((p for p in possible_paths if os.path.exists(p)), None)
         
         if model_path:
             model = YOLO(model_path, task='segment')
-            print(f"Model loaded from {model_path}")
+            print(f"Model loaded: {model_path}")
         else:
-            print("Fallback: Loading standard YOLOv8n-seg")
             model = YOLO("yolov8n-seg.pt")
         
-        # Clean up memory immediately after loading
         gc.collect()
     return model
 
 @app.get("/")
 def home():
-    return {"status": "Service is live! Use POST /predict to analyze images."}
+    return {"status": "Live"}
 
 @app.post("/predict")
 async def predict(file: UploadFile = File(...)):
-    # 1. Load the model (if not already loaded)
-    current_model = get_model()
-    
-    # 2. Process Image
-    contents = await file.read()
-    image = Image.open(io.BytesIO(contents)).convert("RGB")
+    try:
+        current_model = get_model()
 
-    # Resize to max 1024px to save RAM
-    max_size = 1024
-    if max(image.width, image.height) > max_size:
-        ratio = max_size / max(image.width, image.height)
-        new_size = (int(image.width * ratio), int(image.height * ratio))
-        image = image.resize(new_size, Image.Resampling.LANCZOS)
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents)).convert("RGB")
 
-    # 3. Run Inference
-    results = current_model(image, conf=0.25, imgsz=1024)
-    result = results[0]
+        # --- KEY FIX: RESIZE TO 640px ---
+        # This prevents the memory spike that crashes the server
+        max_size = 640
+        if max(image.width, image.height) > max_size:
+            ratio = max_size / max(image.width, image.height)
+            new_size = (int(image.width * ratio), int(image.height * ratio))
+            image = image.resize(new_size, Image.Resampling.LANCZOS)
+        # --------------------------------
 
-    # 4. Count Objects
-    counts = {}
-    if result.boxes:
-        for box in result.boxes:
-            cls_id = int(box.cls[0])
-            if result.names:
-                label = result.names[cls_id]
-                counts[label] = counts.get(label, 0) + 1
+        # Run inference at 640px
+        results = current_model(image, conf=0.25, imgsz=640)
+        result = results[0]
 
-    # 5. Draw Annotations
-    annotated_frame = result.plot(img=np.array(image))
-    annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-    final_image = Image.fromarray(annotated_frame_rgb)
+        # Count Objects
+        counts = {}
+        if result.boxes:
+            for box in result.boxes:
+                cls_id = int(box.cls[0])
+                if result.names:
+                    label = result.names[cls_id]
+                    counts[label] = counts.get(label, 0) + 1
 
-    # 6. Encode Response
-    img_io = io.BytesIO()
-    final_image.save(img_io, format='PNG')
-    img_io.seek(0)
-    img_base64 = base64.b64encode(img_io.getvalue()).decode("utf-8")
+        # Draw Annotations
+        annotated_frame = result.plot(img=np.array(image))
+        annotated_frame_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
+        final_image = Image.fromarray(annotated_frame_rgb)
 
-    # 7. Aggressive Cleanup (Crucial for Free Tier)
-    del results
-    del result
-    del annotated_frame
-    del final_image
-    del image
-    gc.collect()
+        img_io = io.BytesIO()
+        final_image.save(img_io, format='PNG')
+        img_io.seek(0)
+        img_base64 = base64.b64encode(img_io.getvalue()).decode("utf-8")
 
-    return JSONResponse(content={
-        "counts": counts,
-        "image_base64": img_base64,
-        "image_mime": "image/png"
-    })
+        # Cleanup Memory
+        del results, result, annotated_frame, final_image, image
+        gc.collect()
+
+        return JSONResponse(content={
+            "counts": counts,
+            "image_base64": img_base64,
+            "image_mime": "image/png"
+        })
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 if __name__ == "__main__":
     import uvicorn
